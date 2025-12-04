@@ -1,0 +1,68 @@
+name: SecureDev CI Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  sast_sca_container_scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --no-cache-dir -r requirements.txt
+          pip install bandit safety
+
+      - name: Run Bandit (SAST)
+        run: bandit -r . -f json -o bandit_report.json
+
+      - name: Run Safety (SCA)
+        run: safety check -r requirements.txt --json > safety_report.json
+
+      - name: Build Docker image
+        run: docker build -t vulnerable_app:latest .
+
+      - name: Save Docker image
+        run: |
+          docker save vulnerable_app:latest -o vulnerable_app.tar
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-sca-reports
+          path: |
+            bandit_report.json
+            safety_report.json
+            vulnerable_app.tar
+
+  zap_scan:
+    runs-on: ubuntu-latest
+    needs: sast_sca_container_scan
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Pull OWASP ZAP 
+        run: docker pull ghcr.io/zaproxy/zaproxy:stable
+
+      - name: Run ZAP Baseline Scan
+        run: |
+          docker run -v ${{ github.workspace }}:/zap/wrk \
+            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+            -t http://vulnerable_app:5000 \
+            -g gen.conf \
+            -r zap_report.html || true
+
+      - name: Upload ZAP report
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: zap_report.html
